@@ -39,7 +39,7 @@ app.add_middleware(
 
 # Ollama client setup
 try:
-    ollama_client = ollama.Client(host="http://54.242.243.62:11434/")
+    ollama_client = ollama.Client(host="http://localhost:11434/")
     ollama_client.list()
     print("Successfully connected to Ollama.")
 except Exception as e:
@@ -84,10 +84,24 @@ async def root():
 async def create_job(job: schemas.JobCreate, db: AsyncSession = Depends(database.get_db)):
     db_job = models.Job(title=job.title, description=job.description)
     db.add(db_job)
+    
+    await db.flush()
+    new_job_id = db_job.id
+    
     await db.commit()
-    await db.refresh(db_job, ["questions"])
-    return db_job
+    
+    query = (
+        select(models.Job)
+        .options(
+            selectinload(models.Job.questions).selectinload(models.Question.options)
+        )
+        .where(models.Job.id == new_job_id)
+    )
+    result = await db.execute(query)
+    final_job = result.scalars().unique().first()
 
+    return final_job
+    
 @app.get("/jobs/{job_id}", response_model=schemas.Job, tags=["Employer Flow"])
 async def read_job(job_id: int, db: AsyncSession = Depends(database.get_db)):
     """Retrieves a single job by its ID, including its associated questions."""
@@ -657,3 +671,35 @@ async def reorder_questions(job_id: int, request_data: schemas.QuestionReorderRe
 
     await db.commit()
     return
+
+@app.get("/preset-questions/", response_model=List[schemas.QuestionCreate], tags=["Employer Flow"]) # <-- Use QuestionCreate
+async def get_preset_questions():
+    """
+    Returns a hardcoded list of common, reusable questions, including default options for MCQs.
+    """
+    preset_questions_list = [
+        {
+            "question_text": "What are your salary expectations?", 
+            "question_type": "text"
+        },
+        {
+            "question_text": "Are you legally authorized to work in this country?", 
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+        {
+            "question_text": "When is your earliest possible start date?", 
+            "question_type": "text"
+        },
+        {
+            "question_text": "How did you hear about this position?", 
+            "question_type": "mcq_multiple",
+            "options": [{"option_text": "LinkedIn"}, {"option_text": "Company Website"}, {"option_text": "Job Fair"}, {"option_text": "Referral"}]
+        },
+        {
+            "question_text": "Do you now or in the future require visa sponsorship?", 
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        }
+    ]
+    return [schemas.QuestionCreate(**q) for q in preset_questions_list]
