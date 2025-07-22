@@ -1,0 +1,13 @@
+[project]
+name = "tasc-agents"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg>=0.30.0",
+    "fastapi[all]>=0.116.1",
+    "ollama>=0.5.1",
+    "psycopg2-binary>=2.9.10",
+    "sqlalchemy>=2.0.41",
+]
