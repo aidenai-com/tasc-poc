@@ -1,6 +1,7 @@
 import uvicorn
 import uuid
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -22,6 +23,20 @@ app = FastAPI(
     version="1.2.0"
 )
 
+origins = [
+    "http://localhost:3000", # The origin for your React app
+    "http://localhost:3001", # A common alternative port for React
+    "http://localhost:5173", # The default for Vite, another popular tool
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,       # Specifies the allowed origins
+    allow_credentials=True,      # Allows cookies to be included in requests
+    allow_methods=["*"],         # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"],         # Allows all headers
+)
+
 # Ollama client setup
 try:
     ollama_client = ollama.Client(host="http://54.242.243.62:11434/")
@@ -40,9 +55,9 @@ async def startup():
     Remove this for a production environment.
     """
     print("Starting up... Dropping and recreating database tables for development.")
-    async with database.engine.begin() as conn:
-        await conn.run_sync(models.Base.metadata.drop_all)
-        await conn.run_sync(models.Base.metadata.create_all)
+    # async with database.engine.begin() as conn:
+    #     await conn.run_sync(models.Base.metadata.drop_all)
+    #     await conn.run_sync(models.Base.metadata.create_all)
     print("Database tables created.")
 
 # --- Helper Functions ---
@@ -243,11 +258,27 @@ async def create_text_question(job_id: int, question_data: schemas.QuestionCreat
     await get_job_by_id(job_id, db)
     if question_data.question_type != models.QuestionType.TEXT:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This endpoint only accepts questions of type 'TEXT'.")
+    
+    # Step 1: Create the new question object
     db_question = models.Question(job_id=job_id, **question_data.model_dump(exclude={"options"}))
     db.add(db_question)
-    await db.commit()
-    await db.refresh(db_question)
-    return db_question
+    await db.flush()  # Use flush to assign an ID to db_question without ending the transaction
+    
+    new_question_id = db_question.id # Get the ID of the new question
+    
+    await db.commit() # Commit the transaction to save it permanently
+
+    # Step 2: Perform a clean, separate query to fetch the newly created object
+    # This completely avoids any 'expired state' or lazy-loading issues.
+    query = (
+        select(models.Question)
+        .options(selectinload(models.Question.options)) # Eagerly load options
+        .where(models.Question.id == new_question_id)
+    )
+    result = await db.execute(query)
+    final_question = result.scalars().first()
+
+    return final_question
 
 @app.post("/jobs/{job_id}/questions/mcq", response_model=schemas.Question, status_code=status.HTTP_201_CREATED, tags=["Employer Flow"])
 async def create_mcq_question(job_id: int, question_data: schemas.QuestionCreate, db: AsyncSession = Depends(database.get_db)):
@@ -257,6 +288,7 @@ async def create_mcq_question(job_id: int, question_data: schemas.QuestionCreate
     if not question_data.options or len(question_data.options) < 2:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "MCQs must have at least two options.")
     
+    # Step 1: Create the new question object with its options
     db_question = models.Question(
         job_id=job_id,
         question_text=question_data.question_text,
@@ -265,9 +297,22 @@ async def create_mcq_question(job_id: int, question_data: schemas.QuestionCreate
         options=[models.QuestionOption(option_text=opt.option_text) for opt in question_data.options]
     )
     db.add(db_question)
-    await db.commit()
-    await db.refresh(db_question, ["options"])
-    return db_question
+    await db.flush() # Assign an ID to the question and its options
+    
+    new_question_id = db_question.id
+    
+    await db.commit() # Save everything
+
+    # Step 2: Perform a clean re-fetch
+    query = (
+        select(models.Question)
+        .options(selectinload(models.Question.options)) # Eagerly load the options we just made
+        .where(models.Question.id == new_question_id)
+    )
+    result = await db.execute(query)
+    final_question = result.scalars().first()
+
+    return final_question
 
 @app.patch("/questions/{question_id}", response_model=schemas.Question, tags=["Employer Flow"])
 async def update_question(question_id: int, question_update: schemas.QuestionUpdate, db: AsyncSession = Depends(database.get_db)):
