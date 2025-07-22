@@ -28,7 +28,7 @@ class Job(Base):
     title = Column(String, index=True)
     description = Column(Text)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    questions = relationship("Question", back_populates="job")
+    questions = relationship("Question", back_populates="job", order_by="Question.order")
     screening_sessions = relationship("ScreeningSession", back_populates="job")
 
 class Candidate(Base):
@@ -47,6 +47,8 @@ class Question(Base):
     question_text = Column(Text, nullable=False)
     
     question_type = Column(Enum(QuestionType), nullable=False, default=QuestionType.TEXT)
+
+    order = Column(Integer, nullable=False, default=0) 
     
     is_mandatory = Column(Boolean, default=False)
     is_jd_specific = Column(Boolean, default=False)

@@ -85,16 +85,21 @@ async def create_job(job: schemas.JobCreate, db: AsyncSession = Depends(database
     db_job = models.Job(title=job.title, description=job.description)
     db.add(db_job)
     await db.commit()
-    await db.refresh(db_job)
-    await db.refresh(db_job, attribute_names=["questions"])
+    await db.refresh(db_job, ["questions"])
     return db_job
 
 @app.get("/jobs/{job_id}", response_model=schemas.Job, tags=["Employer Flow"])
 async def read_job(job_id: int, db: AsyncSession = Depends(database.get_db)):
     """Retrieves a single job by its ID, including its associated questions."""
-    query = select(models.Job).options(selectinload(models.Job.questions).selectinload(models.Question.options)).where(models.Job.id == job_id)
+    query = (
+        select(models.Job)
+        .options(
+            selectinload(models.Job.questions).selectinload(models.Question.options)
+        )
+        .where(models.Job.id == job_id)
+    )
     result = await db.execute(query)
-    job = result.scalars().first()
+    job = result.scalars().unique().first() # Use .unique()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
@@ -112,8 +117,15 @@ async def create_candidate(candidate: schemas.CandidateCreate, db: AsyncSession 
 @app.get("/jobs/", response_model=List[schemas.Job], tags=["Employer Flow - Jobs"])
 async def list_jobs(db: AsyncSession = Depends(database.get_db)):
     """NEW: Retrieves a list of all jobs in the system."""
-    result = await db.execute(select(models.Job).options(selectinload(models.Job.questions)))
-    jobs = result.scalars().all()
+    # [FIX] Apply the same nested eager loading pattern as in read_job.
+    query = (
+        select(models.Job)
+        .options(
+            selectinload(models.Job.questions).selectinload(models.Question.options)
+        )
+    )
+    result = await db.execute(query)
+    jobs = result.scalars().unique().all()
     return jobs
 
 @app.get("/jobs/{job_id}/questions", response_model=List[schemas.Question], tags=["Employer Flow"])
@@ -139,7 +151,15 @@ async def get_questions_for_job(job_id: int, db: AsyncSession = Depends(database
 @app.patch("/jobs/{job_id}", response_model=schemas.Job, tags=["Employer Flow - Jobs"])
 async def update_job(job_id: int, job_update: schemas.JobUpdate, db: AsyncSession = Depends(database.get_db)):
     """NEW: Edits a job's title or description."""
-    db_job = await db.get(models.Job, job_id)
+    # [FIX] Eagerly load relationships before updating.
+    query = (
+        select(models.Job)
+        .options(selectinload(models.Job.questions).selectinload(models.Question.options))
+        .where(models.Job.id == job_id)
+    )
+    result = await db.execute(query)
+    db_job = result.scalars().unique().first()
+    
     if not db_job:
         raise HTTPException(status_code=404, detail="Job not found")
     
@@ -148,7 +168,7 @@ async def update_job(job_id: int, job_update: schemas.JobUpdate, db: AsyncSessio
         setattr(db_job, key, value)
         
     await db.commit()
-    await db.refresh(db_job, ["questions"])
+    # The db_job object is already fully loaded, no refresh needed.
     return db_job
 
 @app.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Employer Flow - Jobs"])
@@ -316,17 +336,31 @@ async def create_mcq_question(job_id: int, question_data: schemas.QuestionCreate
 
 @app.patch("/questions/{question_id}", response_model=schemas.Question, tags=["Employer Flow"])
 async def update_question(question_id: int, question_update: schemas.QuestionUpdate, db: AsyncSession = Depends(database.get_db)):
-    db_question = await db.get(models.Question, question_id, options=[selectinload(models.Question.options)])
+    # Step 1: Get the existing question from the database.
+    # We don't need to eager load here since we are just updating scalar fields.
+    db_question = await db.get(models.Question, question_id)
     if not db_question:
         raise HTTPException(status_code=404, detail="Question not found")
     
+    # Step 2: Apply the updates from the request data.
     update_data = question_update.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(db_question, key, value)
         
+    # Step 3: Commit the changes to the database.
     await db.commit()
-    await db.refresh(db_question)
-    return db_question
+    
+    # Step 4: Perform a clean, separate query to re-fetch the updated object
+    # with all its relationships eagerly loaded for the response.
+    query = (
+        select(models.Question)
+        .options(selectinload(models.Question.options)) # Eagerly load options
+        .where(models.Question.id == question_id)
+    )
+    result = await db.execute(query)
+    updated_question = result.scalars().first()
+
+    return updated_question
 
 @app.delete("/questions/{question_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Employer Flow"])
 async def delete_question(question_id: int, db: AsyncSession = Depends(database.get_db)):
@@ -346,9 +380,29 @@ async def add_option_to_question(question_id: int, option_data: schemas.Question
 
     new_option = models.QuestionOption(question_id=question_id, option_text=option_data.option_text)
     db.add(new_option)
+    await db.flush()
+    new_option_id = new_option.id
     await db.commit()
-    await db.refresh(new_option)
-    return new_option
+
+    # Re-fetch the newly created option
+    final_option = await db.get(models.QuestionOption, new_option_id)
+    return final_option
+
+@app.get("/jobs/{job_id}/sessions", response_model=List[schemas.ScreeningSession], tags=["Employer Flow - Jobs"])
+async def get_sessions_for_job(job_id: int, db: AsyncSession = Depends(database.get_db)):
+    """
+    Retrieves a list of all screening sessions associated with a specific job.
+    """
+    # Query for sessions related to the job_id
+    query = (
+        select(models.ScreeningSession)
+        .where(models.ScreeningSession.job_id == job_id)
+        .order_by(models.ScreeningSession.created_at.desc()) # Show newest first
+    )
+    result = await db.execute(query)
+    sessions = result.scalars().all()
+    
+    return sessions
 
 @app.patch("/options/{option_id}", response_model=schemas.QuestionOption, tags=["Employer Flow"])
 async def update_option(option_id: int, option_update: schemas.QuestionOptionUpdate, db: AsyncSession = Depends(database.get_db)):
@@ -407,20 +461,32 @@ async def delete_candidate(candidate_id: int, db: AsyncSession = Depends(databas
 @app.post("/screening-sessions/", response_model=schemas.ScreeningSessionCreationResponse, status_code=status.HTTP_201_CREATED, tags=["Employer Flow"])
 async def create_screening_session(session_data: schemas.ScreeningSessionCreate, db: AsyncSession = Depends(database.get_db)):
     await get_job_by_id(session_data.job_id, db)
+    
+    # Step 1: Create the session object and add it
     db_session = models.ScreeningSession(job_id=session_data.job_id)
     db.add(db_session)
+    
+    # Step 2: Flush to get the ID without closing the transaction
     await db.flush()
+    
+    # --- NEW: Save the ID to a separate variable ---
+    new_session_id = db_session.id 
 
     candidate_links = []
     for cid in session_data.candidate_ids:
         candidate = await db.get(models.Candidate, cid)
         if not candidate:
+            # Rollback transaction if a candidate is not found
+            await db.rollback() 
             raise HTTPException(status_code=404, detail=f"Candidate with ID {cid} not found")
         
-        session_candidate_link = models.SessionCandidate(session_id=db_session.id, candidate_id=cid)
+        session_candidate_link = models.SessionCandidate(
+            session_id=new_session_id, # Use the saved ID here
+            candidate_id=cid
+        )
         db.add(session_candidate_link)
         await db.flush()
-        await db.refresh(session_candidate_link)
+        # No need to refresh here, we just need the token
 
         candidate_links.append(schemas.ScreeningSessionLink(
             candidate_id=candidate.id,
@@ -428,10 +494,13 @@ async def create_screening_session(session_data: schemas.ScreeningSessionCreate,
             access_token=session_candidate_link.access_token
         ))
 
+    # Step 3: Commit the transaction
     await db.commit()
+
+    # Step 4: Build the response using the safe variable, not the expired object
     return schemas.ScreeningSessionCreationResponse(
-        session_id=db_session.id,
-        job_id=db_session.job_id,
+        session_id=new_session_id, # <-- Use the safe variable
+        job_id=session_data.job_id, # We already have this from the request
         candidate_links=candidate_links
     )
 
@@ -515,14 +584,15 @@ async def get_test_for_candidate(access_token: str, db: AsyncSession = Depends(d
 
 @app.post("/submit-response", response_model=schemas.Response, tags=["Candidate Flow"])
 async def submit_response(response_data: schemas.ResponseCreate, db: AsyncSession = Depends(database.get_db)):
-    query = select(models.Question).options(selectinload(models.Question.options)).where(models.Question.id == response_data.question_id)
-    question = (await db.execute(query)).scalars().first()
+    # Query for the question to validate options
+    question_query = select(models.Question).options(selectinload(models.Question.options)).where(models.Question.id == response_data.question_id)
+    question = (await db.execute(question_query)).scalars().first()
     if not question:
         raise HTTPException(status_code=404, detail="Question not found")
         
     db_response = models.Response(
-        session_id=response_data.session_id, # Assumes frontend provides this from get_test_for_candidate
-        candidate_id=response_data.candidate_id, # Assumes frontend provides this
+        session_id=response_data.session_id,
+        candidate_id=response_data.candidate_id,
         question_id=response_data.question_id
     )
     
@@ -534,13 +604,25 @@ async def submit_response(response_data: schemas.ResponseCreate, db: AsyncSessio
         valid_ids = {opt.id for opt in question.options}
         if not set(response_data.selected_option_ids).issubset(valid_ids):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid option ID provided.")
-        options = (await db.execute(select(models.QuestionOption).where(models.QuestionOption.id.in_(response_data.selected_option_ids)))).scalars().all()
+        # Fetch the option objects to associate them
+        options_query = select(models.QuestionOption).where(models.QuestionOption.id.in_(response_data.selected_option_ids))
+        options = (await db.execute(options_query)).scalars().all()
         db_response.selected_options.extend(options)
 
     db.add(db_response)
+    await db.flush()
+    new_response_id = db_response.id
     await db.commit()
-    await db.refresh(db_response, ["selected_options"])
-    return db_response
+
+    # Re-fetch the complete response object for the return value
+    final_response_query = (
+        select(models.Response)
+        .options(selectinload(models.Response.selected_options))
+        .where(models.Response.id == new_response_id)
+    )
+    final_response = (await db.execute(final_response_query)).scalars().first()
+    
+    return final_response
 
 
 # --- Runnable Main Block ---
@@ -552,3 +634,26 @@ if __name__ == "__main__":
     """
     print("Starting Uvicorn server...")
     uvicorn.run(app="main:app", host="0.0.0.0", port=8080, reload=True)
+
+
+@app.patch("/jobs/{job_id}/questions/reorder", status_code=status.HTTP_204_NO_CONTENT, tags=["Employer Flow"])
+async def reorder_questions(job_id: int, request_data: schemas.QuestionReorderRequest, db: AsyncSession = Depends(database.get_db)):
+    """
+    Receives a list of question IDs in their new order and updates the 'order' field in the database.
+    """
+    # Create a mapping of question_id -> new_order
+    order_mapping = {question_id: index for index, question_id in enumerate(request_data.ordered_ids)}
+
+    # Fetch all questions for the job at once
+    result = await db.execute(
+        select(models.Question).where(models.Question.job_id == job_id)
+    )
+    questions = result.scalars().all()
+
+    # Update the order for each question
+    for question in questions:
+        if question.id in order_mapping:
+            question.order = order_mapping[question.id]
+
+    await db.commit()
+    return
