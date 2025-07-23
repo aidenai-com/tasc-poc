@@ -15,6 +15,8 @@ import models
 import schemas
 import database
 
+from pydantic import BaseModel
+
 # --- Application and Database Setup ---
 
 app = FastAPI(
@@ -39,7 +41,7 @@ app.add_middleware(
 
 # Ollama client setup
 try:
-    ollama_client = ollama.Client(host="http://localhost:11434/")
+    ollama_client = ollama.Client(host="http://54.242.243.62:11434/")
     ollama_client.list()
     print("Successfully connected to Ollama.")
 except Exception as e:
@@ -205,7 +207,7 @@ async def generate_and_store_jd_questions(job_id: int, db: AsyncSession = Depend
     # This prompt strictly instructs the model to return only a JSON string.
     # Providing an example (few-shot prompting) makes it much more reliable.
     prompt = f"""
-Based on the following job description, generate 5 relevant text-based screening questions for a potential candidate.
+Based on the following job description, generate 5 relevant text-based screening questions for a potential candidate, make the questions non-technical, basic and universal.
 
 **IMPORTANT INSTRUCTIONS:**
 - You MUST return ONLY a valid JSON array of objects.
@@ -214,8 +216,8 @@ Based on the following job description, generate 5 relevant text-based screening
 
 **EXAMPLE FORMAT:**
 [
-    {{"question_text": "What is your experience with FastAPI?"}},
-    {{"question_text": "Describe a complex project you built using SQLAlchemy."}}
+    {{"question_text": "What's your current Salary?"}},
+    {{"question_text": "Do you have UAE Experience?"}}
 ]
 
 **JOB DESCRIPTION:**
@@ -672,34 +674,131 @@ async def reorder_questions(job_id: int, request_data: schemas.QuestionReorderRe
     await db.commit()
     return
 
-@app.get("/preset-questions/", response_model=List[schemas.QuestionCreate], tags=["Employer Flow"]) # <-- Use QuestionCreate
+class OptionCreate(BaseModel):
+    option_text: str
+
+class QuestionCreate(BaseModel):
+    question_text: str
+    question_type: str
+    options: List[OptionCreate] = []
+
+@app.get("/preset-questions/", response_model=List[QuestionCreate], tags=["Employer Flow"])
 async def get_preset_questions():
     """
     Returns a hardcoded list of common, reusable questions, including default options for MCQs.
     """
     preset_questions_list = [
+        # Original Questions
         {
-            "question_text": "What are your salary expectations?", 
+            "question_text": "What are your salary expectations?",
             "question_type": "text"
         },
         {
-            "question_text": "Are you legally authorized to work in this country?", 
+            "question_text": "Are you legally authorized to work in this country?",
             "question_type": "mcq_single",
             "options": [{"option_text": "Yes"}, {"option_text": "No"}]
         },
         {
-            "question_text": "When is your earliest possible start date?", 
+            "question_text": "When is your earliest possible start date?",
             "question_type": "text"
         },
         {
-            "question_text": "How did you hear about this position?", 
+            "question_text": "How did you hear about this position?",
             "question_type": "mcq_multiple",
             "options": [{"option_text": "LinkedIn"}, {"option_text": "Company Website"}, {"option_text": "Job Fair"}, {"option_text": "Referral"}]
         },
+        # Redundant with a new question, but keeping the original
         {
-            "question_text": "Do you now or in the future require visa sponsorship?", 
+            "question_text": "Do you now or in the future require visa sponsorship?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+
+        # Added Questions
+        {
+            "question_text": "What is your level of proficiency in Arabic?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Beginner"}, {"option_text": "Intermediate"}, {"option_text": "Advanced"}, {"option_text": "Fluent"}, {"option_text": "Native"}]
+        },
+        {
+            "question_text": "Do you have experience in Emiratization Hiring?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+        {
+            "question_text": "Will you now or in the future require sponsorship for employment visa status?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+        {
+            "question_text": "Are you ok to work on a 3 month contract?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+        {
+            "question_text": "What's your salary expectations?",
+            "question_type": "text"
+        },
+        {
+            "question_text": "How many years of work experience do you have with Microsoft Office?",
+            "question_type": "text"
+        },
+        {
+            "question_text": "How many years of work experience do you have with Insurance Claims?",
+            "question_type": "text"
+        },
+        {
+            "question_text": "Have you completed the following level of education: Bachelor's Degree?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+        {
+            "question_text": "What's your current Salary?",
+            "question_type": "text"
+        },
+        {
+            "question_text": "This is 6 days working-Monday to Friday(full day) Saturday (half day) will you be interested?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+        {
+            "question_text": "How many years of work experience do you have with Contract Recruitment?",
+            "question_type": "text"
+        },
+        {
+            "question_text": "How many years of work experience do you have with 360 Recruitment?",
+            "question_type": "text"
+        },
+        {
+            "question_text": "Do you have UAE Experience?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+        {
+            "question_text": "The offered salary is 3500 AED?Are you interested?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+        {
+            "question_text": "Are you a Native Arabic/Urdu Speaker?",
+            "question_type": "mcq_multiple",
+            "options": [{"option_text": "Arabic"}, {"option_text": "Urdu"}, {"option_text": "Both"}, {"option_text": "Neither"}]
+        },
+        {
+            "question_text": "Are you currently unemployed and can you join immediately?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+        {
+            "question_text": "We are looking only for Immediate Joiners. Are you currently unemployed?",
+            "question_type": "mcq_single",
+            "options": [{"option_text": "Yes"}, {"option_text": "No"}]
+        },
+        {
+            "question_text": "Offered salary is 3000-4000 AED + Transportation (No Accommodation provided). Will you be interested?",
             "question_type": "mcq_single",
             "options": [{"option_text": "Yes"}, {"option_text": "No"}]
         }
     ]
-    return [schemas.QuestionCreate(**q) for q in preset_questions_list]
+    # Note: Some of the requested questions are duplicates. They have been added as requested.
+    return [QuestionCreate(**q) for q in preset_questions_list]
