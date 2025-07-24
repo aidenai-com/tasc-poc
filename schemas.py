@@ -1,53 +1,116 @@
 # schemas.py
+import uuid
 from pydantic import BaseModel, ConfigDict, field_validator
 from typing import List, Optional
 import datetime
 
-# Import the enum from your models to ensure consistency
-from models import QuestionType
-
 # =======================================================================
-#                            OPTION SCHEMAS
+#                            BASE & SHARED SCHEMAS
 # =======================================================================
-class QuestionOptionBase(BaseModel):
+class QuestionOption(BaseModel):
+    id: str
     option_text: str
 
-class QuestionOptionCreate(QuestionOptionBase):
+# =======================================================================
+#                           COMPANY SCHEMAS
+# =======================================================================
+class CompanyBase(BaseModel):
+    name: str
+    industry: Optional[str] = None
+    description: Optional[str] = None
+    website: Optional[str] = None
+
+class CompanyCreate(CompanyBase):
     pass
 
-class QuestionOptionUpdate(QuestionOptionBase):
-    pass
-
-class QuestionReorderRequest(BaseModel):
-    ordered_ids: List[int]
-
-class QuestionOption(QuestionOptionBase):
-    id: int
+class Company(CompanyBase):
+    id: uuid.UUID
     model_config = ConfigDict(from_attributes=True)
 
 # =======================================================================
-#                           QUESTION SCHEMAS
+#                           CANDIDATE SUB-SCHEMAS
+# =======================================================================
+class Education(BaseModel):
+    degree: Optional[str] = None
+    institution: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class Experience(BaseModel):
+    title: Optional[str] = None
+    company_name: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+# (Add other sub-schemas like Skill, Language, etc. as needed)
+
+# =======================================================================
+#                           CANDIDATE SCHEMAS
+# =======================================================================
+class CandidateBase(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    location: Optional[str] = None
+
+class CandidateCreate(CandidateBase):
+    full_name: str
+    email: str
+
+class CandidateUpdate(CandidateBase):
+    pass
+
+class Candidate(CandidateBase):
+    id: uuid.UUID
+    education: List[Education] = []
+    experiences: List[Experience] = []
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+    model_config = ConfigDict(from_attributes=True)
+
+# =======================================================================
+#                            FORM BUILDER SCHEMAS
 # =======================================================================
 class QuestionBase(BaseModel):
     question_text: str
-    question_type: QuestionType
-    is_mandatory: bool = False
-    is_jd_specific: bool = False
+    question_type: str
 
 class QuestionCreate(QuestionBase):
-    # Allows creating a question with its options in a single API call
-    options: Optional[List[QuestionOptionCreate]] = None
+    pass
 
 class QuestionUpdate(BaseModel):
-    # All fields are optional for PATCH requests
     question_text: Optional[str] = None
-    is_mandatory: Optional[bool] = None
+    # order: Optional[int] = None
 
 class Question(QuestionBase):
-    id: int
-    job_id: int
-    order: int  # Ensure the 'order' field is included in the response
+    id: uuid.UUID
+    # We removed 'order' as requested
     options: List[QuestionOption] = []
+    
+    model_config = ConfigDict(from_attributes=True)
+
+    # --- THIS IS THE NEW, CORRECTED LOGIC ---
+    @field_validator('options', mode='before')
+    @classmethod
+    def transform_options_from_orm(cls, v, info):
+        """
+        This validator runs before Pydantic tries to validate the 'options' field.
+        It checks if the input 'v' is a string (coming from the database model)
+        and transforms it into the list of objects Pydantic expects.
+        """
+        if isinstance(v, str):
+            # If v is a string like "Yes,No", split it
+            opts_list = [o.strip() for o in v.split(',') if o.strip()]
+            # Transform it into the required List[QuestionOption] format
+            return [QuestionOption(id=opt, option_text=opt) for opt in opts_list]
+        
+        # If 'v' is already a list or None, let it pass through to the default validator
+        return v
+
+# class QuestionReorderRequest(BaseModel):
+#     ordered_ids: List[uuid.UUID]
+
+class QuestionSet(BaseModel):
+    id: uuid.UUID
+    name: str
+    questions: List[Question] = []
     model_config = ConfigDict(from_attributes=True)
 
 # =======================================================================
@@ -55,123 +118,53 @@ class Question(QuestionBase):
 # =======================================================================
 class JobBase(BaseModel):
     title: str
-    description: Optional[str] = None
 
 class JobCreate(JobBase):
-    pass
-
-class JobUpdate(JobBase):
-    title: Optional[str] = None
-    description: Optional[str] = None
+    company_id: uuid.UUID
 
 class Job(JobBase):
-    id: int
-    created_at: datetime.datetime
-    questions: List[Question] = []
+    id: uuid.UUID
+    question_sets: List[QuestionSet] = []
     model_config = ConfigDict(from_attributes=True)
 
 # =======================================================================
-#                           CANDIDATE SCHEMAS
+#                           APPLICATION & SCREENING
 # =======================================================================
-class CandidateBase(BaseModel):
-    first_name: str
-    last_name: str
-    email: str
+class ApplicationBase(BaseModel):
+    job_id: uuid.UUID
+    candidate_id: uuid.UUID
+    status: str # Using str for simplicity, can use the Enum
 
-class CandidateCreate(CandidateBase):
+class ApplicationCreate(ApplicationBase):
     pass
 
-class CandidateUpdate(BaseModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    email: Optional[str] = None
-
-class Candidate(CandidateBase):
-    id: int
-    created_at: datetime.datetime
+class Application(ApplicationBase):
+    id: uuid.UUID
+    applied_at: datetime.datetime
+    updated_at: datetime.datetime
     model_config = ConfigDict(from_attributes=True)
 
-# =======================================================================
-#                           RESPONSE SCHEMAS
-# =======================================================================
-class ResponseCreate(BaseModel):
-    question_id: int
-    session_id: int # Include session_id for submission
-    candidate_id: int # Include candidate_id for submission
-    response_text: Optional[str] = None
-    selected_option_ids: Optional[List[int]] = None
+class ScreeningTestSendRequest(BaseModel):
+    application_ids: List[uuid.UUID]
 
-    # Validator to ensure one and only one type of answer is given
-    @field_validator('selected_option_ids', mode='after')
-    @classmethod
-    def check_response_type(cls, v, info):
-        values = info.data
-        if 'response_text' in values and values.get('response_text') is not None and v is not None:
-            raise ValueError('Provide either response_text or selected_option_ids, not both.')
-        if ('response_text' not in values or values.get('response_text') is None) and (v is None or not v):
-            raise ValueError('Either response_text or selected_option_ids must be provided.')
-        return v
+class ScreeningTestLink(BaseModel):
+    application_id: uuid.UUID
+    test_link_id: uuid.UUID
+    candidate_email: Optional[str] = None
 
-class Response(BaseModel):
-    id: int
-    question_id: int
-    response_text: Optional[str] = None
-    submitted_at: datetime.datetime
-    selected_options: List[QuestionOption] = []
-    model_config = ConfigDict(from_attributes=True)
+class ScreeningTestSendResponse(BaseModel):
+    links: List[ScreeningTestLink]
 
-# =======================================================================
-#                      SCREENING SESSION SCHEMAS
-# =======================================================================
-
-class ScreeningSession(BaseModel):
-    id: int
-    job_id: int
-    created_at: datetime.datetime
-    model_config = ConfigDict(from_attributes=True)
-
-class ScreeningSessionCreate(BaseModel):
-    job_id: int
-    candidate_ids: List[int]
-
-class ScreeningSessionLink(BaseModel):
-    candidate_id: int
-    candidate_email: str
-    access_token: str
-
-class ScreeningSessionCreationResponse(BaseModel):
-    session_id: int
-    job_id: int
-    candidate_links: List[ScreeningSessionLink]
-
-class ScreeningTestPayload(BaseModel):
+class TakeTestPayload(BaseModel):
     job_title: str
-    job_description: Optional[str] # Description can be optional
-    candidate_id: int
-    session_id: int
+    response_session_id: uuid.UUID
+    application_id: uuid.UUID
     questions: List[Question]
-    # No config needed here as it's not built directly from a single DB model
 
-# --- Schemas for Viewing Screening Results ---
-class AnswerResult(BaseModel):
-    """Represents a single formatted answer for the results view."""
-    question_text: str
-    question_type: QuestionType
-    response_text: Optional[str] = None
-    selected_options: List[QuestionOption] = []
+class ResponseCreate(BaseModel):
+    question_id: uuid.UUID
+    answer: Optional[str] = None
+
+class Response(ResponseCreate):
+    id: uuid.UUID
     model_config = ConfigDict(from_attributes=True)
-
-class CandidateResult(BaseModel):
-    """Represents the full submission from a single candidate."""
-    candidate_id: int
-    first_name: str
-    last_name: str
-    email: str
-    responses: List[AnswerResult]
-
-class ScreeningResults(BaseModel):
-    """The top-level response model for the entire screening session report."""
-    session_id: int
-    job_id: int
-    job_title: str
-    results: List[CandidateResult]
