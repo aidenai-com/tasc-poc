@@ -5,16 +5,75 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload, joinedload
-from typing import List
+from typing import List, Dict
 import ollama
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from starlette.concurrency import run_in_threadpool
+
 
 # Import your project-specific modules
 import models
 import schemas
 import database
 
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USER = "aditya.singireddy.21@gmail.com"
+SMTP_PASSWORD = "xjbe wygt dvjz idki" 
+FRONTEND_URL = "http://localhost:3000"
+
+def _send_email_sync(subject: str, body: str, recipient: str) -> None:
+    """
+    The actual blocking email sending logic. This will be run in a thread pool.
+    """
+    msg = MIMEMultipart()
+    msg['From'] = SMTP_USER
+    msg['To'] = recipient
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+    server.starttls()
+    server.login(SMTP_USER, SMTP_PASSWORD)
+    server.sendmail(SMTP_USER, recipient, msg.as_string())
+    server.quit()
+
+
+async def send_prescreening_email(name: str, recipient: str, response_session_id: str) -> str:
+    """
+    An async wrapper that constructs the email and sends it without blocking the event loop.
+    """
+    subject = "Invitation to TASC Pre-Screening Round"
+    # Construct the unique link for the candidate
+    link = f"{FRONTEND_URL}/test/{response_session_id}"
+
+    body = f"""
+Dear {name},
+
+We are pleased to inform you that you have been shortlisted for the pre-screening round for your recent application with TASC.
+
+This is a crucial step in our evaluation process. To proceed, please complete the required questions by clicking the link below:
+{link}
+
+Please complete this at your earliest convenience.
+
+We wish you the best of luck!
+
+Sincerely,
+The TASC Talent Acquisition Team
+"""
+    try:
+        # Use run_in_threadpool to execute the blocking smtplib code
+        await run_in_threadpool(_send_email_sync, subject=subject, body=body, recipient=recipient)
+        return "Sent"
+    except Exception as e:
+        print(f"Failed to send email to {recipient}: {e}") # Log the error to the console
+        return f"Failed: {str(e)}"
 
 DEFAULT_PRESET_QUESTIONS = [
     "Will you now or in the future require sponsorship for employment visa status?(Yes/No)",
@@ -286,30 +345,30 @@ async def send_screening_tests(request_data: schemas.ScreeningTestSendRequest, d
     await db.commit()
     return schemas.ScreeningTestSendResponse(links=created_links)
 
-@app.post("/jobs/{job_id}/send-to-sourced", response_model=schemas.ScreeningSentResponse, tags=["Employer Flow - Screening"])
+@app.post("/jobs/{job_id}/send-to-sourced", response_model=Dict[str, str], tags=["Employer Flow - Screening"])
 async def send_to_all_sourced_candidates(job_id: uuid.UUID, db: AsyncSession = Depends(database.get_db)):
     """
-    Finds all 'SOURCED' applications for a given job and creates a ResponseSession for each.
-    The Application status remains 'SOURCED'.
+    Finds all 'SOURCED' applications for a given job, creates a screening test session,
+    and sends an email to each candidate with their unique test link.
     """
-    # ... (Steps 1, 2, and 3 for finding applications and the question set are the same)
+    # Step 1: Find all 'SOURCED' applications for this job and eagerly load the candidate data.
     app_query = (
-        select(models.Application.id)
+        select(models.Application)
+        .options(selectinload(models.Application.candidate))
         .where(
             models.Application.job_id == job_id,
             models.Application.status == models.ApplicationStatus.SOURCED
         )
     )
-    application_ids = (await db.execute(app_query)).scalars().all()
+    applications = (await db.execute(app_query)).scalars().unique().all()
 
-    if not application_ids:
+    if not applications:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No 'SOURCED' candidates found for this job to send tests to."
         )
 
-    # We only need the application IDs and the question set ID for this operation.
-    # This simplifies the query significantly.
+    # Step 2: Get the "Prescreening" question set ID for this job.
     qset_query = select(models.QuestionSet.id).where(
         models.QuestionSet.job_id == job_id,
         models.QuestionSet.name == "Prescreening"
@@ -319,29 +378,37 @@ async def send_to_all_sourced_candidates(job_id: uuid.UUID, db: AsyncSession = D
     if not question_set_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Prescreening question set not found for Job ID {job_id}. Cannot send tests."
+            detail=f"Prescreening question set not found for Job ID {job_id}."
         )
 
-    # Step 4: Create a ResponseSession for each application.
-    created_session_ids = []
-    for app_id in application_ids:
-        # Create the test session. Its default status is 'PENDING'.
-        db_session = models.ResponseSession(application_id=app_id, set_id=question_set_id)
+    # Step 3: Iterate, create a session, and send an email for each application.
+    email_statuses = {}
+    for application in applications:
+        # Check for valid candidate and email before proceeding
+        if not (application.candidate and application.candidate.email):
+            email_statuses[f"AppID: {application.id}"] = "Failed: Missing candidate data or email address."
+            continue
+
+        # Create the test session object
+        db_session = models.ResponseSession(application_id=application.id, set_id=question_set_id)
         db.add(db_session)
         
-        # --- THIS IS THE FIX ---
-        # We no longer change the application.status here. It stays as SOURCED.
-        
+        # We need the session's ID for the link, so we flush it to the DB.
         await db.flush()
-        created_session_ids.append(db_session.id)
+        
+        # Send the email using the newly created session ID
+        email_status = await send_prescreening_email(
+            name=application.candidate.full_name or "Candidate",
+            recipient=application.candidate.email,
+            response_session_id=str(db_session.id)
+        )
+        email_statuses[application.candidate.email] = email_status
 
+    # Step 4: Commit all the new ResponseSession objects to the database.
     await db.commit()
 
-    return schemas.ScreeningSentResponse(
-        message=f"Successfully initiated screening for {len(created_session_ids)} sourced candidates.",
-        sent_count=len(created_session_ids),
-        session_ids=created_session_ids
-    )
+    return email_statuses
+
 
 # =======================================================================
 #                            CANDIDATE FLOW
