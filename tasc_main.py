@@ -134,6 +134,27 @@ async def create_job(job_data: schemas.JobCreate, db: AsyncSession = Depends(dat
     
     return final_job
 
+@app.get("/jobs/{job_id}/sessions", response_model=List[schemas.ScreeningSession], tags=["Employer Flow - Screening"])
+async def get_sessions_for_job(job_id: uuid.UUID, db: AsyncSession = Depends(database.get_db)):
+    """
+    Retrieves a list of all screening sessions (and their statuses) for a specific job.
+    """
+    # --- THIS IS THE CORRECTED QUERY ---
+    query = (
+        select(models.ResponseSession)
+        # We must join to Application to filter by job_id
+        .join(models.Application)
+        # CRITICAL: We must eagerly load the 'application' relationship itself
+        # so the Pydantic computed_field can access `session.application.job_id`
+        .options(selectinload(models.ResponseSession.application))
+        .where(models.Application.job_id == job_id)
+        .order_by(models.ResponseSession.created_at.desc())
+    )
+    result = await db.execute(query)
+    sessions = result.scalars().all()
+    
+    return sessions
+
 # --- Candidate Management Endpoints (FIX: Added missing endpoints) ---
 @app.post("/candidates/", response_model=schemas.Candidate, status_code=status.HTTP_201_CREATED, tags=["Employer Flow - Candidates"])
 async def create_candidate(candidate_data: schemas.CandidateCreate, db: AsyncSession = Depends(database.get_db)):
@@ -278,8 +299,16 @@ async def get_test(session_id: uuid.UUID, db: AsyncSession = Depends(database.ge
     session = result.scalars().unique().first()
     if not session or not session.application or not session.question_set:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Test session not found or is incomplete.")
-    return schemas.TakeTestPayload(job_title=session.application.job.title, response_session_id=session.id, application_id=session.application.id, questions=session.question_set.questions)
-
+    if session.status == models.InterviewStatus.PENDING:
+        session.status = models.InterviewStatus.IN_PROGRESS
+        await db.commit()
+        await db.refresh(session)
+    return schemas.TakeTestPayload(
+            job_title=session.application.job.title,
+            response_session_id=session.id,
+            application_id=session.application.id,
+            questions=session.question_set.questions
+        )
 @app.post("/response-sessions/{session_id}/responses", response_model=schemas.Response, tags=["Candidate Flow"])
 async def submit_response(session_id: uuid.UUID, response_data: schemas.ResponseCreate, db: AsyncSession = Depends(database.get_db)):
     db_response = models.Response(session_id=session_id, **response_data.model_dump())
@@ -327,6 +356,7 @@ async def complete_session(session_id: uuid.UUID, db: AsyncSession = Depends(dat
         
     # 2. Apply the updates to the ORM objects.
     session.application.status = new_status
+    session.status = models.InterviewStatus.COMPLETED
     session.completed_at = datetime.datetime.utcnow()
     
     # 3. Commit the changes to the database.

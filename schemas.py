@@ -1,6 +1,6 @@
 # schemas.py
 import uuid
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, computed_field
 from typing import List, Optional
 import datetime
 
@@ -130,6 +130,31 @@ class Job(JobBase):
 # =======================================================================
 #                           APPLICATION & SCREENING
 # =======================================================================
+
+class _ApplicationForSession(BaseModel):
+    """A private, minimal schema to load the job_id for the computed field."""
+    job_id: uuid.UUID
+    model_config = ConfigDict(from_attributes=True)
+
+# --- Now, update the ScreeningSession schema ---
+class ScreeningSession(BaseModel):
+    id: uuid.UUID
+    application_id: uuid.UUID
+    created_at: datetime.datetime
+    status: str
+    
+    # This field tells Pydantic to load the 'application' relationship from the ORM model.
+    # We will exclude it from the final JSON response.
+    application: _ApplicationForSession
+
+    model_config = ConfigDict(from_attributes=True)
+
+    # The computed_field now works because self.application exists.
+    @computed_field
+    @property
+    def job_id(self) -> uuid.UUID:
+        return self.application.job_id
+
 class ApplicationBase(BaseModel):
     job_id: uuid.UUID
     candidate_id: uuid.UUID
