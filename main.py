@@ -650,27 +650,27 @@ if __name__ == "__main__":
     uvicorn.run(app="main:app", host="0.0.0.0", port=8080, reload=True)
 
 
-@app.patch("/jobs/{job_id}/questions/reorder", status_code=status.HTTP_204_NO_CONTENT, tags=["Employer Flow"])
-async def reorder_questions(job_id: int, request_data: schemas.QuestionReorderRequest, db: AsyncSession = Depends(database.get_db)):
-    """
-    Receives a list of question IDs in their new order and updates the 'order' field in the database.
-    """
-    # Create a mapping of question_id -> new_order
-    order_mapping = {question_id: index for index, question_id in enumerate(request_data.ordered_ids)}
+# @app.patch("/jobs/{job_id}/questions/reorder", status_code=status.HTTP_204_NO_CONTENT, tags=["Employer Flow"])
+# async def reorder_questions(job_id: int, request_data: schemas.QuestionReorderRequest, db: AsyncSession = Depends(database.get_db)):
+#     """
+#     Receives a list of question IDs in their new order and updates the 'order' field in the database.
+#     """
+#     # Create a mapping of question_id -> new_order
+#     order_mapping = {question_id: index for index, question_id in enumerate(request_data.ordered_ids)}
 
-    # Fetch all questions for the job at once
-    result = await db.execute(
-        select(models.Question).where(models.Question.job_id == job_id)
-    )
-    questions = result.scalars().all()
+#     # Fetch all questions for the job at once
+#     result = await db.execute(
+#         select(models.Question).where(models.Question.job_id == job_id)
+#     )
+#     questions = result.scalars().all()
 
-    # Update the order for each question
-    for question in questions:
-        if question.id in order_mapping:
-            question.order = order_mapping[question.id]
+#     # Update the order for each question
+#     for question in questions:
+#         if question.id in order_mapping:
+#             question.order = order_mapping[question.id]
 
-    await db.commit()
-    return
+#     await db.commit()
+#     return
 
 @app.get("/preset-questions/", response_model=List[schemas.QuestionCreate], tags=["Employer Flow"]) # <-- Use QuestionCreate
 async def get_preset_questions():

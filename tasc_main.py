@@ -50,6 +50,35 @@ async def get_job_by_id(job_id: int, db: AsyncSession):
     return job
 
 # =======================================================================
+#                           APPLICATION SETUP
+# =======================================================================
+
+@app.post("/applications/", response_model=schemas.Application, status_code=status.HTTP_201_CREATED, tags=["Employer Flow - Setup"])
+async def create_application(app_data: schemas.ApplicationCreate, db: AsyncSession = Depends(database.get_db)):
+    """
+    Creates an Application, linking a Candidate to a Job with a 'SOURCED' status.
+    This is a prerequisite for sending a screening test.
+    """
+    # Check for existing application to prevent duplicates
+    existing_app = await db.execute(
+        select(models.Application).where(
+            models.Application.job_id == app_data.job_id,
+            models.Application.candidate_id == app_data.candidate_id
+        )
+    )
+    if existing_app.scalars().first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This candidate has already been added to this job."
+        )
+
+    db_application = models.Application(**app_data.model_dump())
+    db.add(db_application)
+    await db.commit()
+    await db.refresh(db_application)
+    return db_application
+
+# =======================================================================
 #                            EMPLOYER FLOW
 # =======================================================================
 
@@ -205,16 +234,16 @@ async def delete_question(question_id: uuid.UUID, db: AsyncSession = Depends(dat
     await db.commit()
     return
 
-@app.patch("/question-sets/{set_id}/reorder", status_code=status.HTTP_204_NO_CONTENT, tags=["Employer Flow - Form Builder"])
-async def reorder_questions(set_id: uuid.UUID, request_data: schemas.QuestionReorderRequest, db: AsyncSession = Depends(database.get_db)):
-    order_mapping = {question_id: index for index, question_id in enumerate(request_data.ordered_ids)}
-    result = await db.execute(select(models.Question).where(models.Question.set_id == set_id))
-    questions_in_set = result.scalars().all()
-    for question in questions_in_set:
-        if question.id in order_mapping:
-            question.order = order_mapping[question.id]
-    await db.commit()
-    return
+# @app.patch("/question-sets/{set_id}/reorder", status_code=status.HTTP_204_NO_CONTENT, tags=["Employer Flow - Form Builder"])
+# async def reorder_questions(set_id: uuid.UUID, request_data: schemas.QuestionReorderRequest, db: AsyncSession = Depends(database.get_db)):
+#     order_mapping = {question_id: index for index, question_id in enumerate(request_data.ordered_ids)}
+#     result = await db.execute(select(models.Question).where(models.Question.set_id == set_id))
+#     questions_in_set = result.scalars().all()
+#     for question in questions_in_set:
+#         if question.id in order_mapping:
+#             question.order = order_mapping[question.id]
+#     await db.commit()
+#     return
 
 # --- Screening Flow Endpoints ---
 @app.post("/send-screening-tests", response_model=schemas.ScreeningTestSendResponse, tags=["Employer Flow - Screening"])
@@ -263,23 +292,48 @@ async def submit_response(session_id: uuid.UUID, response_data: schemas.Response
 
 @app.post("/response-sessions/{session_id}/complete", tags=["Candidate Flow"])
 async def complete_session(session_id: uuid.UUID, db: AsyncSession = Depends(database.get_db)):
-    query = select(models.ResponseSession).options(selectinload(models.ResponseSession.application), selectinload(models.ResponseSession.question_set).selectinload(models.QuestionSet.questions), selectinload(models.ResponseSession.responses)).where(models.ResponseSession.id == session_id)
+    """
+    Marks the session as complete, evaluates the answers, and updates the ApplicationStatus.
+    """
+    query = (
+        select(models.ResponseSession)
+        .options(
+            selectinload(models.ResponseSession.application),
+            selectinload(models.ResponseSession.question_set).selectinload(models.QuestionSet.questions),
+            selectinload(models.ResponseSession.responses)
+        )
+        .where(models.ResponseSession.id == session_id)
+    )
     session = (await db.execute(query)).scalars().unique().first()
-    if not session:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+
+    if not session or not session.application: # Added a check for application
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session or related Application not found")
+        
     all_passed = True
-    for question in session.question_set.questions:
+    mcq_questions = [q for q in session.question_set.questions if q.question_type == 'mcq_single']
+    
+    for question in mcq_questions:
         response_for_question = next((r for r in session.responses if r.question_id == question.id), None)
         if not response_for_question or response_for_question.answer.lower() != 'yes':
             all_passed = False
             break
+
+    # --- THIS IS THE FIX ---
+    # 1. Determine the new status and store it in a simple variable.
     if all_passed:
-        session.application.status = models.ApplicationStatus.SCREENING_PASSED
+        new_status = models.ApplicationStatus.SCREENING_PASSED
     else:
-        session.application.status = models.ApplicationStatus.SCREENING_FAILED
+        new_status = models.ApplicationStatus.SCREENING_FAILED
+        
+    # 2. Apply the updates to the ORM objects.
+    session.application.status = new_status
     session.completed_at = datetime.datetime.utcnow()
+    
+    # 3. Commit the changes to the database.
     await db.commit()
-    return {"status": session.application.status.value}
+    
+    # 4. Return the value from the safe variable, NOT the expired ORM object.
+    return {"status": new_status.value}
 
 if __name__ == "__main__":
     print("Starting Uvicorn server...")

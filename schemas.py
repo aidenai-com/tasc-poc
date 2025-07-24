@@ -1,6 +1,6 @@
 # schemas.py
 import uuid
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from typing import List, Optional
 import datetime
 
@@ -77,26 +77,35 @@ class QuestionCreate(QuestionBase):
 
 class QuestionUpdate(BaseModel):
     question_text: Optional[str] = None
-    order: Optional[int] = None
+    # order: Optional[int] = None
 
 class Question(QuestionBase):
     id: uuid.UUID
-    order: int
+    # We removed 'order' as requested
     options: List[QuestionOption] = []
-    model_config = ConfigDict(from_attributes=True)
     
-    @classmethod
-    def model_validate(cls, obj, *args, **kwargs):
-        if hasattr(obj, 'options') and isinstance(obj.options, str):
-            opts_str = obj.options
-            new_opts = [QuestionOption(id=o.strip(), option_text=o.strip()) for o in opts_str.split(',')] if opts_str else []
-            obj_dict = {c.name: getattr(obj, c.name) for c in obj.__table__.columns if hasattr(obj, c.name)}
-            obj_dict['options'] = new_opts
-            return super().model_validate(obj_dict, *args, **kwargs)
-        return super().model_validate(obj, *args, **kwargs)
+    model_config = ConfigDict(from_attributes=True)
 
-class QuestionReorderRequest(BaseModel):
-    ordered_ids: List[uuid.UUID]
+    # --- THIS IS THE NEW, CORRECTED LOGIC ---
+    @field_validator('options', mode='before')
+    @classmethod
+    def transform_options_from_orm(cls, v, info):
+        """
+        This validator runs before Pydantic tries to validate the 'options' field.
+        It checks if the input 'v' is a string (coming from the database model)
+        and transforms it into the list of objects Pydantic expects.
+        """
+        if isinstance(v, str):
+            # If v is a string like "Yes,No", split it
+            opts_list = [o.strip() for o in v.split(',') if o.strip()]
+            # Transform it into the required List[QuestionOption] format
+            return [QuestionOption(id=opt, option_text=opt) for opt in opts_list]
+        
+        # If 'v' is already a list or None, let it pass through to the default validator
+        return v
+
+# class QuestionReorderRequest(BaseModel):
+#     ordered_ids: List[uuid.UUID]
 
 class QuestionSet(BaseModel):
     id: uuid.UUID
@@ -131,6 +140,8 @@ class ApplicationCreate(ApplicationBase):
 
 class Application(ApplicationBase):
     id: uuid.UUID
+    applied_at: datetime.datetime
+    updated_at: datetime.datetime
     model_config = ConfigDict(from_attributes=True)
 
 class ScreeningTestSendRequest(BaseModel):
