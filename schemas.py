@@ -98,6 +98,7 @@ class Question(QuestionBase):
 class QuestionSet(BaseModel):
     id: uuid.UUID
     name: str
+    updated_at: datetime.datetime
     questions: List[Question] = []
     model_config = ConfigDict(from_attributes=True)
 
@@ -112,8 +113,18 @@ class JobCreate(JobBase):
 
 class Job(JobBase):
     id: uuid.UUID
+    department: Optional[str] = None  # ADDED
+    location: Optional[str] = None    # ADDED
     question_sets: List[QuestionSet] = []
     model_config = ConfigDict(from_attributes=True)
+
+    @computed_field # ADDED computed field
+    @property
+    def last_updated(self) -> Optional[datetime.datetime]:
+        """Calculates the most recent update time from any of the job's question sets."""
+        if not self.question_sets:
+            return None
+        return max(qs.updated_at for qs in self.question_sets)
 
 # =======================================================================
 #                           APPLICATION & SCREENING
@@ -151,7 +162,8 @@ class Application(ApplicationBase):
     model_config = ConfigDict(from_attributes=True)
 
 class ScreeningTestSendRequest(BaseModel):
-    application_ids: List[uuid.UUID]
+    job_id: uuid.UUID
+    candidate_ids: List[uuid.UUID]
 
 class ScreeningTestLink(BaseModel):
     application_id: uuid.UUID
