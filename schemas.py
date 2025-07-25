@@ -1,8 +1,9 @@
 # schemas.py
 import uuid
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, computed_field
 from typing import List, Optional
 import datetime
+from models_final import InterviewStatus, InterviewResult # Import Enums
 
 # =======================================================================
 #                            BASE & SHARED SCHEMAS
@@ -39,18 +40,20 @@ class Experience(BaseModel):
     title: Optional[str] = None
     company_name: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
-# (Add other sub-schemas like Skill, Language, etc. as needed)
 
 # =======================================================================
 #                           CANDIDATE SCHEMAS
 # =======================================================================
 class CandidateBase(BaseModel):
+    id: uuid.UUID # Added ID for consistency
     full_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     location: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
 
-class CandidateCreate(CandidateBase):
+
+class CandidateCreate(BaseModel): # Simplified for creation
     full_name: str
     email: str
 
@@ -58,12 +61,10 @@ class CandidateUpdate(CandidateBase):
     pass
 
 class Candidate(CandidateBase):
-    id: uuid.UUID
     education: List[Education] = []
     experiences: List[Experience] = []
     created_at: datetime.datetime
     updated_at: datetime.datetime
-    model_config = ConfigDict(from_attributes=True)
 
 # =======================================================================
 #                            FORM BUILDER SCHEMAS
@@ -77,31 +78,18 @@ class QuestionCreate(QuestionBase):
 
 class QuestionUpdate(BaseModel):
     question_text: Optional[str] = None
-    # order: Optional[int] = None
 
 class Question(QuestionBase):
     id: uuid.UUID
-    # We removed 'order' as requested
     options: List[QuestionOption] = []
-    
     model_config = ConfigDict(from_attributes=True)
 
-    # --- THIS IS THE NEW, CORRECTED LOGIC ---
     @field_validator('options', mode='before')
     @classmethod
     def transform_options_from_orm(cls, v, info):
-        """
-        This validator runs before Pydantic tries to validate the 'options' field.
-        It checks if the input 'v' is a string (coming from the database model)
-        and transforms it into the list of objects Pydantic expects.
-        """
         if isinstance(v, str):
-            # If v is a string like "Yes,No", split it
             opts_list = [o.strip() for o in v.split(',') if o.strip()]
-            # Transform it into the required List[QuestionOption] format
             return [QuestionOption(id=opt, option_text=opt) for opt in opts_list]
-        
-        # If 'v' is already a list or None, let it pass through to the default validator
         return v
 
 # class QuestionReorderRequest(BaseModel):
@@ -130,10 +118,27 @@ class Job(JobBase):
 # =======================================================================
 #                           APPLICATION & SCREENING
 # =======================================================================
+class _ApplicationForSession(BaseModel):
+    job_id: uuid.UUID
+    model_config = ConfigDict(from_attributes=True)
+
+class ScreeningSession(BaseModel):
+    id: uuid.UUID
+    application_id: uuid.UUID
+    created_at: datetime.datetime
+    status: InterviewStatus # Use the Enum for type safety
+    application: _ApplicationForSession
+    model_config = ConfigDict(from_attributes=True)
+
+    @computed_field
+    @property
+    def job_id(self) -> uuid.UUID:
+        return self.application.job_id
+
 class ApplicationBase(BaseModel):
     job_id: uuid.UUID
     candidate_id: uuid.UUID
-    status: str # Using str for simplicity, can use the Enum
+    status: str
 
 class ApplicationCreate(ApplicationBase):
     pass
@@ -142,6 +147,7 @@ class Application(ApplicationBase):
     id: uuid.UUID
     applied_at: datetime.datetime
     updated_at: datetime.datetime
+    candidate: CandidateBase # Include basic candidate info
     model_config = ConfigDict(from_attributes=True)
 
 class ScreeningTestSendRequest(BaseModel):
@@ -167,4 +173,34 @@ class ResponseCreate(BaseModel):
 
 class Response(ResponseCreate):
     id: uuid.UUID
+    model_config = ConfigDict(from_attributes=True)
+
+class ScreeningSentResponse(BaseModel):
+    message: str
+    sent_count: int
+    session_ids: List[uuid.UUID]
+
+# =======================================================================
+#        NEW RESPONSE SESSION SCHEMA for RESULTS
+# =======================================================================
+# This schema represents an Application with its nested Candidate.
+# It's used within the main ResponseSession schema below.
+class ApplicationWithCandidate(ApplicationBase):
+    id: uuid.UUID
+    candidate: CandidateBase # Nest the candidate schema
+    model_config = ConfigDict(from_attributes=True)
+
+# This is the new, comprehensive schema that was missing.
+# It defines the structure for the /response-sessions/{session_id} endpoint.
+class ResponseSession(BaseModel):
+    id: uuid.UUID
+    status: InterviewStatus
+    result: Optional[InterviewResult] = None
+    completed_at: Optional[datetime.datetime] = None
+    
+    # Nested relationships loaded from the database
+    application: ApplicationWithCandidate
+    question_set: QuestionSet
+    responses: List[Response]
+    
     model_config = ConfigDict(from_attributes=True)
