@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-DATABASE_URL = "postgresql+asyncpg://aidap:aidap@localhost:5432/tasc-poc"
+DATABASE_URL = "postgresql+asyncpg://aidap:aidap@localhost:5432/tasc_final_2"
 
 engine = create_async_engine(DATABASE_URL, echo=True)
 AsyncSessionLocal = sessionmaker(

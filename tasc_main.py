@@ -17,7 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 
 # Import your project-specific modules
-import models
+import models_final as models
 import schemas
 import database
 
@@ -113,7 +113,7 @@ app.add_middleware(
 
 # Ollama client setup (remains the same)
 try:
-    ollama_client = ollama.Client(host="http://localhost:11434/")
+    ollama_client = ollama.Client(host="http://54.242.243.62:11434/")
     ollama_client.list()
     print("Successfully connected to Ollama.")
 except Exception as e:

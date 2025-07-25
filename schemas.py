@@ -3,7 +3,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, field_validator, computed_field
 from typing import List, Optional
 import datetime
-from models import InterviewStatus, InterviewResult # Import Enums
+from models_final import InterviewStatus, InterviewResult # Import Enums
 
 # =======================================================================
 #                            BASE & SHARED SCHEMAS
